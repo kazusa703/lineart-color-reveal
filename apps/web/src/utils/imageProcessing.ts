@@ -12,7 +12,7 @@
 // hidden canvas. It is then optionally feathered (blurred) before compositing.
 //
 // Compositing formula per pixel:
-//   output = lineArt * (1 - mask/255) + original * (mask/255)
+//   output = lineArt * (1 - revealMask/255) + original * (revealMask/255)
 //
 // This mask format is intentionally simple so that a future AI-based line art
 // API can accept/return the same mask without conversion.
@@ -24,12 +24,16 @@ export interface LineArtOptions {
   thickness: number; // 1-3, dilation passes (default: 1)
 }
 
-const DEFAULT_LINE_ART_OPTIONS: LineArtOptions = { threshold: 40, thickness: 1 };
+export const DEFAULT_LINE_ART_OPTIONS: LineArtOptions = { threshold: 40, thickness: 1 };
 
 // --- Export options ---
-export interface ExportOptions {
+export interface ExportCompositeOptions {
+  lineArt: ImageData;
+  original: ImageData;
+  revealMask: ImageData;
+  feather: number;
   targetWidth: number;
-  watermark: boolean;
+  watermarkText?: string;
 }
 
 // 3x3 box blur on a single-channel Float32Array
@@ -46,7 +50,6 @@ function boxBlur(src: Float32Array, w: number, h: number): Float32Array {
       dst[y * w + x] = sum / 9;
     }
   }
-  // Copy border pixels
   for (let x = 0; x < w; x++) {
     dst[x] = src[x];
     dst[(h - 1) * w + x] = src[(h - 1) * w + x];
@@ -67,7 +70,6 @@ function dilate(mask: Uint8Array, w: number, h: number): Uint8Array {
         dst[y * w + x] = 1;
         continue;
       }
-      // Check 4-connected neighbors
       let found = false;
       if (y > 0 && mask[(y - 1) * w + x]) found = true;
       if (y < h - 1 && mask[(y + 1) * w + x]) found = true;
@@ -89,16 +91,13 @@ export function generateLineArt(
   const output = new ImageData(w, h);
   const out = output.data;
 
-  // Step 1: Grayscale
   const grayRaw = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) {
     grayRaw[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
   }
 
-  // Step 2: Noise reduction (box blur)
   const gray = boxBlur(grayRaw, w, h);
 
-  // Step 3: Sobel edge detection
   const edges = new Float32Array(w * h);
   let maxEdge = 0;
   for (let y = 1; y < h - 1; y++) {
@@ -119,7 +118,6 @@ export function generateLineArt(
     }
   }
 
-  // Step 4: Normalize + binary threshold
   const thresholdNorm = opts.threshold / 255;
   let lineMask: Uint8Array = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
@@ -127,12 +125,10 @@ export function generateLineArt(
     lineMask[i] = norm > thresholdNorm ? 1 : 0;
   }
 
-  // Step 5: Dilation (line thickness)
   for (let d = 1; d < opts.thickness; d++) {
     lineMask = dilate(lineMask, w, h);
   }
 
-  // Step 6: Output — white background, black lines
   for (let i = 0; i < w * h; i++) {
     const v = lineMask[i] ? 0 : 255;
     out[i * 4] = v;
@@ -144,32 +140,40 @@ export function generateLineArt(
   return output;
 }
 
-// Feathers a reveal mask by applying box blur.
-// Reveal mask convention: white(255)=reveal, black(0)=no reveal.
-// The UI `radius` (0..10) controls blur strength. Internally capped to
-// max 2 box-blur passes for performance at high resolutions (2048+).
-// Higher radius values increase the per-pass spread via scaling instead.
+// Feathers (softens edges of) a reveal mask by applying box blur.
+//
+// Reveal mask convention:
+//   white(255) = reveal original color
+//   black(0)   = no reveal (show line art)
+//
+// Performance: box blur passes are capped at 2 regardless of radius.
+// The UI radius (0..10) maps to 1 or 2 passes. To preserve perceived
+// feather strength at low pass counts, the blurred result is blended
+// with the original mask using a strength factor derived from radius.
 export function featherRevealMask(revealMask: ImageData, radius: number): ImageData {
   if (radius <= 0) return revealMask;
   const { width: w, height: h } = revealMask;
+  const n = w * h;
 
-  // Cap passes at 2 for performance; scale input to compensate
-  const passes = Math.min(2, Math.max(1, Math.round(radius / 5)));
+  // Max 2 blur passes for performance (safe at 2048+)
+  const passes = radius < 6 ? 1 : 2;
 
-  let buf: Float32Array = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) buf[i] = revealMask.data[i * 4];
+  // Blur strength: how much of the blurred result to use (0..1)
+  // radius 1 → 0.3, radius 5 → 0.7, radius 10 → 1.0
+  const strength = Math.min(1, radius / 10);
 
-  // Apply multiple blur rounds per pass to approximate larger radius
-  const roundsPerPass = Math.max(1, Math.round(radius / 2));
+  const orig = new Float32Array(n);
+  for (let i = 0; i < n; i++) orig[i] = revealMask.data[i * 4];
+
+  let blurred: Float32Array = orig;
   for (let p = 0; p < passes; p++) {
-    for (let r = 0; r < roundsPerPass; r++) {
-      buf = boxBlur(buf, w, h);
-    }
+    blurred = boxBlur(blurred, w, h);
   }
 
+  // Blend: mix(original, blurred, strength)
   const result = new ImageData(w, h);
-  for (let i = 0; i < w * h; i++) {
-    const v = Math.round(Math.min(255, Math.max(0, buf[i])));
+  for (let i = 0; i < n; i++) {
+    const v = Math.round(orig[i] * (1 - strength) + blurred[i] * strength);
     result.data[i * 4] = v;
     result.data[i * 4 + 1] = v;
     result.data[i * 4 + 2] = v;
@@ -179,8 +183,9 @@ export function featherRevealMask(revealMask: ImageData, radius: number): ImageD
 }
 
 // Composites line art with original colors based on the reveal mask.
+//
 // revealMask: white(255)=show original color, black(0)=show line art.
-// Optionally feathers the mask before blending.
+// feather: UI radius value (0..10) passed to featherRevealMask.
 export function compositeWithRevealMask(
   lineArt: ImageData,
   original: ImageData,
@@ -196,7 +201,7 @@ export function compositeWithRevealMask(
   const m = feathered.data;
 
   for (let i = 0; i < width * height; i++) {
-    const alpha = m[i * 4] / 255; // 255=fully reveal original
+    const alpha = m[i * 4] / 255; // 255 = fully reveal original
     const idx = i * 4;
     out[idx] = Math.round(la[idx] * (1 - alpha) + orig[idx] * alpha);
     out[idx + 1] = Math.round(la[idx + 1] * (1 - alpha) + orig[idx + 1] * alpha);
@@ -235,7 +240,7 @@ export function loadImageFromFile(
 }
 
 // Draws a watermark on the bottom-right of a canvas context.
-function drawWatermark(ctx: CanvasRenderingContext2D, w: number, h: number) {
+function drawWatermark(ctx: CanvasRenderingContext2D, w: number, h: number, text: string) {
   const fontSize = Math.max(14, Math.round(w / 30));
   const padding = Math.round(fontSize * 0.8);
   ctx.save();
@@ -244,31 +249,44 @@ function drawWatermark(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.fillStyle = '#000';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
-  ctx.fillText('LineArt Color Reveal', w - padding, h - padding);
+  ctx.fillText(text, w - padding, h - padding);
   ctx.restore();
 }
 
-// Exports a composite image as a PNG blob.
+// Composites layers and exports as a PNG blob.
 //
-// Currently renders at the working resolution (up to 1024px) by scaling the
-// display canvas. In a future version this function will accept the raw
-// layers (original, lineArt, revealMask) and re-composite at the requested
-// targetWidth — enabling true high-resolution export for 2048/4096.
-export function exportComposite(
-  displayCanvas: HTMLCanvasElement,
-  opts: ExportOptions,
-): Promise<Blob> {
+// Takes the raw layers (lineArt, original, revealMask) and re-composites
+// at the requested targetWidth. This design allows future high-resolution
+// export (2048/4096) by passing full-res layers instead of scaling a
+// pre-rendered canvas.
+//
+// Current MVP: all layers are at working resolution (<=1024px), so the
+// composite is scaled up via canvas drawImage. When high-res layers become
+// available, this function will composite at native resolution.
+export function exportCompositePNG(opts: ExportCompositeOptions): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    const { targetWidth, watermark } = opts;
-    const expCanvas = document.createElement('canvas');
-    const scale = targetWidth / displayCanvas.width;
-    expCanvas.width = targetWidth;
-    expCanvas.height = Math.round(displayCanvas.height * scale);
-    const ctx = expCanvas.getContext('2d')!;
-    ctx.drawImage(displayCanvas, 0, 0, expCanvas.width, expCanvas.height);
+    const { lineArt, original, revealMask, feather, targetWidth, watermarkText } = opts;
+    const { width: srcW, height: srcH } = lineArt;
 
-    if (watermark) {
-      drawWatermark(ctx, expCanvas.width, expCanvas.height);
+    // Composite at source resolution
+    const composite = compositeWithRevealMask(lineArt, original, revealMask, feather);
+
+    // Render to a temp canvas at source size
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = srcW;
+    srcCanvas.height = srcH;
+    srcCanvas.getContext('2d')!.putImageData(composite, 0, 0);
+
+    // Scale to target
+    const scale = targetWidth / srcW;
+    const expCanvas = document.createElement('canvas');
+    expCanvas.width = targetWidth;
+    expCanvas.height = Math.round(srcH * scale);
+    const ctx = expCanvas.getContext('2d')!;
+    ctx.drawImage(srcCanvas, 0, 0, expCanvas.width, expCanvas.height);
+
+    if (watermarkText) {
+      drawWatermark(ctx, expCanvas.width, expCanvas.height, watermarkText);
     }
 
     expCanvas.toBlob(

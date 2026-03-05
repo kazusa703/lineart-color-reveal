@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  generateLineArt,
   compositeWithRevealMask,
   featherRevealMask,
   type LineArtOptions,
 } from '@/utils/imageProcessing';
+import { localLineArtProvider } from '@/utils/lineArtProvider';
 
 export default function DebugPage() {
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -22,43 +22,45 @@ export default function DebugPage() {
   const [hasImage, setHasImage] = useState(false);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
+  // Debounce + latest-only
+  const renderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renderIdRef = useRef(0);
+
   const render = useCallback(() => {
-    const orig = originalDataRef.current;
-    if (!orig) return;
+    if (renderTimerRef.current) clearTimeout(renderTimerRef.current);
 
-    const { width: w, height: h } = orig;
-    const opts: LineArtOptions = { threshold, thickness };
-    const lineArt = generateLineArt(orig, opts);
+    renderTimerRef.current = setTimeout(async () => {
+      const orig = originalDataRef.current;
+      if (!orig) return;
 
-    // Draw original
-    const origCtx = originalCanvasRef.current!.getContext('2d')!;
-    origCtx.putImageData(orig, 0, 0);
+      const requestId = ++renderIdRef.current;
+      const { width: w, height: h } = orig;
+      const opts: LineArtOptions = { threshold, thickness };
+      const lineArt = await localLineArtProvider(orig, opts);
 
-    // Draw line art
-    const laCtx = lineArtCanvasRef.current!.getContext('2d')!;
-    laCtx.putImageData(lineArt, 0, 0);
+      if (requestId !== renderIdRef.current) return;
 
-    // Create a demo reveal mask (radial gradient: white=reveal center, black=no reveal edges)
-    const maskCanvas = maskCanvasRef.current!;
-    const maskCtx = maskCanvas.getContext('2d')!;
-    maskCtx.fillStyle = '#000';
-    maskCtx.fillRect(0, 0, w, h);
-    const gradient = maskCtx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 3);
-    gradient.addColorStop(0, '#fff');
-    gradient.addColorStop(1, '#000');
-    maskCtx.fillStyle = gradient;
-    maskCtx.fillRect(0, 0, w, h);
+      originalCanvasRef.current!.getContext('2d')!.putImageData(orig, 0, 0);
+      lineArtCanvasRef.current!.getContext('2d')!.putImageData(lineArt, 0, 0);
 
-    const rawMask = maskCtx.getImageData(0, 0, w, h);
-    const featheredMask = feather > 0 ? featherRevealMask(rawMask, feather) : rawMask;
+      // Demo reveal mask: radial gradient (white=reveal center, black=no reveal edges)
+      const maskCanvas = maskCanvasRef.current!;
+      const maskCtx = maskCanvas.getContext('2d')!;
+      maskCtx.fillStyle = '#000';
+      maskCtx.fillRect(0, 0, w, h);
+      const gradient = maskCtx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 3);
+      gradient.addColorStop(0, '#fff');
+      gradient.addColorStop(1, '#000');
+      maskCtx.fillStyle = gradient;
+      maskCtx.fillRect(0, 0, w, h);
 
-    // Re-draw feathered mask for visualization
-    maskCtx.putImageData(featheredMask, 0, 0);
+      const rawMask = maskCtx.getImageData(0, 0, w, h);
+      const featheredMask = feather > 0 ? featherRevealMask(rawMask, feather) : rawMask;
+      maskCtx.putImageData(featheredMask, 0, 0);
 
-    // Composite
-    const composite = compositeWithRevealMask(lineArt, orig, rawMask, feather);
-    const compCtx = compositeCanvasRef.current!.getContext('2d')!;
-    compCtx.putImageData(composite, 0, 0);
+      const composite = compositeWithRevealMask(lineArt, orig, rawMask, feather);
+      compositeCanvasRef.current!.getContext('2d')!.putImageData(composite, 0, 0);
+    }, 150);
   }, [threshold, thickness, feather]);
 
   const loadImage = useCallback(
@@ -88,14 +90,13 @@ export default function DebugPage() {
         ctx.drawImage(img, 0, 0, w, h);
         originalDataRef.current = ctx.getImageData(0, 0, w, h);
         setHasImage(true);
-        render();
       };
       img.src = URL.createObjectURL(file);
     },
-    [render],
+    [],
   );
 
-  // Also try sessionStorage image
+  // Load from sessionStorage on mount
   useEffect(() => {
     const dataUrl = sessionStorage.getItem('uploadedImage');
     if (!dataUrl) return;
@@ -126,7 +127,6 @@ export default function DebugPage() {
     img.src = dataUrl;
   }, []);
 
-  // Re-render when params or image change
   useEffect(() => {
     if (hasImage) render();
   }, [hasImage, render]);
@@ -203,15 +203,23 @@ export default function DebugPage() {
         </div>
         <div>
           <h2 className="text-sm font-bold text-zinc-500 mb-1">Line Art</h2>
+          <p className="text-xs text-zinc-400 mb-1">
+            via localLineArtProvider (Sobel edge detection)
+          </p>
           <canvas ref={lineArtCanvasRef} className="border border-border w-full" />
         </div>
         <div>
           <h2 className="text-sm font-bold text-zinc-500 mb-1">Reveal Mask (feathered)</h2>
-          <p className="text-xs text-zinc-400 mb-1">white(255)=reveal color / black(0)=line art</p>
+          <p className="text-xs text-zinc-400 mb-1">
+            white(255)=reveal original color / black(0)=show line art
+          </p>
           <canvas ref={maskCanvasRef} className="border border-border w-full" />
         </div>
         <div>
           <h2 className="text-sm font-bold text-zinc-500 mb-1">Composite</h2>
+          <p className="text-xs text-zinc-400 mb-1">
+            mix(lineArt, original, revealMask)
+          </p>
           <canvas ref={compositeCanvasRef} className="border border-border w-full" />
         </div>
       </div>

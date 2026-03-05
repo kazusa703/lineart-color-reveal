@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  generateLineArt,
   compositeWithRevealMask,
-  exportComposite,
+  exportCompositePNG,
   type LineArtOptions,
 } from '@/utils/imageProcessing';
+import { localLineArtProvider } from '@/utils/lineArtProvider';
 import { MaskHistory } from '@/utils/maskHistory';
 
 type Tool = 'brush' | 'eraser';
@@ -31,10 +31,8 @@ export default function EditorPage() {
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
 
-  // Line art params
   const [lineThreshold, setLineThreshold] = useState(40);
   const [lineThickness, setLineThickness] = useState(1);
-  // Feather
   const [feather, setFeather] = useState(3);
 
   const isPaintingRef = useRef(false);
@@ -43,15 +41,9 @@ export default function EditorPage() {
   const lastPanPosRef = useRef({ x: 0, y: 0 });
   const lastPaintPosRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Regenerate line art when params change
-  const regenerateLineArt = useCallback(
-    (threshold: number, thickness: number) => {
-      if (!originalDataRef.current) return;
-      const opts: LineArtOptions = { threshold, thickness };
-      lineArtDataRef.current = generateLineArt(originalDataRef.current, opts);
-    },
-    [],
-  );
+  // Debounce + latest-only for line art regeneration
+  const regenerateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const regenerateIdRef = useRef(0);
 
   const renderComposite = useCallback(() => {
     const displayCanvas = displayCanvasRef.current;
@@ -72,6 +64,25 @@ export default function EditorPage() {
     displayCtx.putImageData(composite, 0, 0);
   }, [feather]);
 
+  // Regenerate line art via provider with debounce + request ID
+  const scheduleRegenerate = useCallback(
+    (threshold: number, thickness: number) => {
+      if (regenerateTimerRef.current) clearTimeout(regenerateTimerRef.current);
+
+      regenerateTimerRef.current = setTimeout(async () => {
+        if (!originalDataRef.current) return;
+        const requestId = ++regenerateIdRef.current;
+        const opts: LineArtOptions = { threshold, thickness };
+        const result = await localLineArtProvider(originalDataRef.current, opts);
+        // Only apply if this is still the latest request
+        if (requestId !== regenerateIdRef.current) return;
+        lineArtDataRef.current = result;
+        renderComposite();
+      }, 150);
+    },
+    [renderComposite],
+  );
+
   // Load image from sessionStorage
   useEffect(() => {
     const dataUrl = sessionStorage.getItem('uploadedImage');
@@ -81,7 +92,7 @@ export default function EditorPage() {
     }
 
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       const MAX_DIM = 1024;
       let { width, height } = img;
       if (width > MAX_DIM || height > MAX_DIM) {
@@ -99,8 +110,9 @@ export default function EditorPage() {
       tmpCtx.drawImage(img, 0, 0, width, height);
       originalDataRef.current = tmpCtx.getImageData(0, 0, width, height);
 
-      // Generate line art
-      regenerateLineArt(lineThreshold, lineThickness);
+      // Generate initial line art (no debounce for first load)
+      const opts: LineArtOptions = { threshold: lineThreshold, thickness: lineThickness };
+      lineArtDataRef.current = await localLineArtProvider(originalDataRef.current, opts);
 
       // Setup canvases
       const displayCanvas = displayCanvasRef.current!;
@@ -134,12 +146,11 @@ export default function EditorPage() {
     if (!isLoading) renderComposite();
   }, [feather, isLoading, renderComposite]);
 
-  // Re-generate line art when threshold/thickness change
+  // Debounced re-generation when threshold/thickness change
   useEffect(() => {
     if (isLoading) return;
-    regenerateLineArt(lineThreshold, lineThickness);
-    renderComposite();
-  }, [lineThreshold, lineThickness, isLoading, regenerateLineArt, renderComposite]);
+    scheduleRegenerate(lineThreshold, lineThickness);
+  }, [lineThreshold, lineThickness, isLoading, scheduleRegenerate]);
 
   const getCanvasPos = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -188,7 +199,6 @@ export default function EditorPage() {
     [tool, brushSize, renderComposite],
   );
 
-  // Draw brush cursor overlay
   const drawCursor = useCallback(
     (x: number, y: number) => {
       const cursorCanvas = cursorCanvasRef.current;
@@ -246,7 +256,6 @@ export default function EditorPage() {
     if (!isPaintingRef.current) return;
     isPaintingRef.current = false;
     lastPaintPosRef.current = null;
-    // Save reveal mask state for undo
     const maskCanvas = maskCanvasRef.current!;
     const maskCtx = maskCanvas.getContext('2d')!;
     const revealMask = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
@@ -267,8 +276,7 @@ export default function EditorPage() {
   const handleUndo = useCallback(() => {
     const prev = historyRef.current.undo();
     if (!prev) return;
-    const maskCanvas = maskCanvasRef.current!;
-    maskCanvas.getContext('2d')!.putImageData(prev, 0, 0);
+    maskCanvasRef.current!.getContext('2d')!.putImageData(prev, 0, 0);
     renderComposite();
     setCanUndo(historyRef.current.canUndo);
     setCanRedo(historyRef.current.canRedo);
@@ -277,8 +285,7 @@ export default function EditorPage() {
   const handleRedo = useCallback(() => {
     const next = historyRef.current.redo();
     if (!next) return;
-    const maskCanvas = maskCanvasRef.current!;
-    maskCanvas.getContext('2d')!.putImageData(next, 0, 0);
+    maskCanvasRef.current!.getContext('2d')!.putImageData(next, 0, 0);
     renderComposite();
     setCanUndo(historyRef.current.canUndo);
     setCanRedo(historyRef.current.canRedo);
@@ -292,12 +299,9 @@ export default function EditorPage() {
     });
   }, []);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Ignore when typing in an input
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
-
       if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
         e.preventDefault();
         if (e.shiftKey) handleRedo();
@@ -314,9 +318,7 @@ export default function EditorPage() {
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === ' ') {
-        isSpaceDownRef.current = false;
-      }
+      if (e.key === ' ') isSpaceDownRef.current = false;
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -332,12 +334,20 @@ export default function EditorPage() {
         setShowExportDialog(true);
         return;
       }
+      if (!originalDataRef.current || !lineArtDataRef.current) return;
       setIsExporting(true);
       requestAnimationFrame(async () => {
-        const canvas = displayCanvasRef.current!;
-        const blob = await exportComposite(canvas, {
+        const maskCanvas = maskCanvasRef.current!;
+        const revealMask = maskCanvas
+          .getContext('2d')!
+          .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+        const blob = await exportCompositePNG({
+          lineArt: lineArtDataRef.current!,
+          original: originalDataRef.current!,
+          revealMask,
+          feather,
           targetWidth,
-          watermark: true,
+          watermarkText: 'LineArt Color Reveal',
         });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -348,7 +358,7 @@ export default function EditorPage() {
         setIsExporting(false);
       });
     },
-    [],
+    [feather],
   );
 
   if (isLoading) {
@@ -513,7 +523,7 @@ export default function EditorPage() {
             style={{ imageRendering: zoom > 2 ? 'pixelated' : 'auto' }}
           />
         </div>
-        {/* Hidden reveal mask canvas */}
+        {/* Hidden reveal mask canvas: white(255)=reveal, black(0)=no reveal */}
         <canvas ref={maskCanvasRef} className="hidden" />
       </div>
 
