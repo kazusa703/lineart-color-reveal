@@ -6,7 +6,7 @@ import {
   featherRevealMask,
   type LineArtOptions,
 } from '@/utils/imageProcessing';
-import { localLineArtProvider } from '@/utils/lineArtProvider';
+import { getLineArtProvider, isReplicateProvider } from '@/utils/lineArtProvider';
 
 export default function DebugPage() {
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -36,7 +36,7 @@ export default function DebugPage() {
       const requestId = ++renderIdRef.current;
       const { width: w, height: h } = orig;
       const opts: LineArtOptions = { threshold, thickness };
-      const lineArt = await localLineArtProvider(orig, opts);
+      const lineArt = await getLineArtProvider()(orig, opts);
 
       if (requestId !== renderIdRef.current) return;
 
@@ -204,7 +204,7 @@ export default function DebugPage() {
         <div>
           <h2 className="text-sm font-bold text-zinc-500 mb-1">Line Art</h2>
           <p className="text-xs text-zinc-400 mb-1">
-            via localLineArtProvider (Sobel edge detection)
+            via {isReplicateProvider() ? 'Replicate AI' : 'local Sobel edge detection'}
           </p>
           <canvas ref={lineArtCanvasRef} className="border border-border w-full" />
         </div>

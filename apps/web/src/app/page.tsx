@@ -26,7 +26,12 @@ export default function UploadPage() {
       // Store image in sessionStorage as data URL for the editor
       const reader = new FileReader();
       reader.onload = () => {
-        sessionStorage.setItem('uploadedImage', reader.result as string);
+        try {
+          sessionStorage.setItem('uploadedImage', reader.result as string);
+        } catch {
+          setError('Image is too large to process in this browser. Try a smaller image.');
+          return;
+        }
         router.push('/editor');
       };
       reader.readAsDataURL(file);

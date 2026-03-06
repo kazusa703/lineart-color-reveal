@@ -6,7 +6,7 @@ import {
   exportCompositePNG,
   type LineArtOptions,
 } from '@/utils/imageProcessing';
-import { localLineArtProvider } from '@/utils/lineArtProvider';
+import { getLineArtProvider, isReplicateProvider } from '@/utils/lineArtProvider';
 import { MaskHistory } from '@/utils/maskHistory';
 
 type Tool = 'brush' | 'eraser';
@@ -28,12 +28,14 @@ export default function EditorPage() {
   const [canRedo, setCanRedo] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
-  const [showExportDialog, setShowExportDialog] = useState(false);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
 
   const [lineThreshold, setLineThreshold] = useState(40);
   const [lineThickness, setLineThickness] = useState(1);
   const [feather, setFeather] = useState(3);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+
+  const isAiMode = isReplicateProvider();
 
   const isPaintingRef = useRef(false);
   const isPanningRef = useRef(false);
@@ -73,11 +75,19 @@ export default function EditorPage() {
         if (!originalDataRef.current) return;
         const requestId = ++regenerateIdRef.current;
         const opts: LineArtOptions = { threshold, thickness };
-        const result = await localLineArtProvider(originalDataRef.current, opts);
-        // Only apply if this is still the latest request
-        if (requestId !== regenerateIdRef.current) return;
-        lineArtDataRef.current = result;
-        renderComposite();
+        try {
+          setGenerationError(null);
+          const result = await getLineArtProvider()(originalDataRef.current, opts);
+          // Only apply if this is still the latest request
+          if (requestId !== regenerateIdRef.current) return;
+          lineArtDataRef.current = result;
+          renderComposite();
+        } catch (err) {
+          if (requestId !== regenerateIdRef.current) return;
+          const msg = err instanceof Error ? err.message : 'Line art generation failed';
+          setGenerationError(msg);
+          console.error('[lineart]', err);
+        }
       }, 150);
     },
     [renderComposite],
@@ -92,6 +102,11 @@ export default function EditorPage() {
     }
 
     const img = new Image();
+    img.onerror = () => {
+      console.error('[editor] Failed to load image from sessionStorage');
+      sessionStorage.removeItem('uploadedImage');
+      window.location.href = '/';
+    };
     img.onload = async () => {
       const MAX_DIM = 1024;
       let { width, height } = img;
@@ -112,7 +127,18 @@ export default function EditorPage() {
 
       // Generate initial line art (no debounce for first load)
       const opts: LineArtOptions = { threshold: lineThreshold, thickness: lineThickness };
-      lineArtDataRef.current = await localLineArtProvider(originalDataRef.current, opts);
+      try {
+        lineArtDataRef.current = await getLineArtProvider()(originalDataRef.current, opts);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Line art generation failed';
+        setGenerationError(msg);
+        console.error('[lineart]', err);
+        // Fall back to local provider so the editor is still usable
+        lineArtDataRef.current = (await import('@/utils/imageProcessing')).generateLineArt(
+          originalDataRef.current,
+          opts,
+        );
+      }
 
       // Setup canvases
       const displayCanvas = displayCanvasRef.current!;
@@ -328,37 +354,107 @@ export default function EditorPage() {
     };
   }, [handleUndo, handleRedo]);
 
+  // Convert ImageData to PNG Blob via offscreen canvas
+  const imageDataToBlob = useCallback((data: ImageData): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const c = document.createElement('canvas');
+      c.width = data.width;
+      c.height = data.height;
+      c.getContext('2d')!.putImageData(data, 0, 0);
+      c.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('Failed to encode layer'))),
+        'image/png',
+      );
+    });
+  }, []);
+
   const handleExport = useCallback(
     async (targetWidth: number) => {
-      if (targetWidth > 1024) {
-        setShowExportDialog(true);
-        return;
-      }
       if (!originalDataRef.current || !lineArtDataRef.current) return;
       setIsExporting(true);
-      requestAnimationFrame(async () => {
-        const maskCanvas = maskCanvasRef.current!;
-        const revealMask = maskCanvas
-          .getContext('2d')!
-          .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-        const blob = await exportCompositePNG({
-          lineArt: lineArtDataRef.current!,
-          original: originalDataRef.current!,
-          revealMask,
-          feather,
-          targetWidth,
-          watermarkText: 'LineArt Color Reveal',
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `lineart-color-reveal-${targetWidth}px.png`;
-        a.click();
-        URL.revokeObjectURL(url);
+      setGenerationError(null);
+
+      try {
+        if (targetWidth <= 1024) {
+          // Client-side export with watermark
+          const maskCanvas = maskCanvasRef.current!;
+          const revealMask = maskCanvas
+            .getContext('2d')!
+            .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+          const blob = await exportCompositePNG({
+            lineArt: lineArtDataRef.current!,
+            original: originalDataRef.current!,
+            revealMask,
+            feather,
+            targetWidth,
+            watermarkText: 'LineArt Color Reveal',
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `lineart-color-reveal-${targetWidth}px.png`;
+          a.click();
+          URL.revokeObjectURL(url);
+        } else {
+          // Server-side high-res export (beta watermark)
+          const maskCanvas = maskCanvasRef.current!;
+          const revealMask = maskCanvas
+            .getContext('2d')!
+            .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+
+          const [origBlob, laBlob, maskBlob] = await Promise.all([
+            imageDataToBlob(originalDataRef.current!),
+            imageDataToBlob(lineArtDataRef.current!),
+            imageDataToBlob(revealMask),
+          ]);
+
+          const form = new FormData();
+          form.append('originalPng', origBlob, 'original.png');
+          form.append('lineArtPng', laBlob, 'lineart.png');
+          form.append('revealMaskPng', maskBlob, 'mask.png');
+          form.append('targetWidth', String(targetWidth));
+          form.append('feather', String(feather));
+
+          // Attach redeem code if available
+          const redeemCode = localStorage.getItem('redeemCode') ?? '';
+          if (redeemCode) {
+            form.append('redeemCode', redeemCode);
+          }
+
+          const res = await fetch('/api/export', { method: 'POST', body: form });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            if (res.status === 429) {
+              throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+            }
+            if (res.status === 402) {
+              throw new Error(
+                `Insufficient credits (need ${data.required ?? '?'}). Purchase more on the Pricing page.`,
+              );
+            }
+            if (res.status === 403) {
+              throw new Error(data.error || 'Invalid redeem code. Check the Pricing page.');
+            }
+            throw new Error(data.error || `Export failed: ${res.status}`);
+          }
+
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `lineart-color-reveal-${targetWidth}px.png`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Export failed';
+        setGenerationError(msg);
+        console.error('[export]', err);
+      } finally {
         setIsExporting(false);
-      });
+      }
     },
-    [feather],
+    [feather, imageDataToBlob],
   );
 
   if (isLoading) {
@@ -425,10 +521,16 @@ export default function EditorPage() {
 
         <hr className="border-border" />
 
-        <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">Line Art</h2>
+        <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">
+          Line Art {isAiMode && <span className="text-accent font-normal normal-case">(AI)</span>}
+        </h2>
+
+        {isAiMode && (
+          <p className="text-xs text-zinc-400">AI mode — threshold/thickness are ignored.</p>
+        )}
 
         <div>
-          <label className="text-sm text-zinc-500 block mb-1">
+          <label className={`text-sm block mb-1 ${isAiMode ? 'text-zinc-300' : 'text-zinc-500'}`}>
             Line Threshold: {lineThreshold}
           </label>
           <input
@@ -437,12 +539,13 @@ export default function EditorPage() {
             max={200}
             value={lineThreshold}
             onChange={(e) => setLineThreshold(Number(e.target.value))}
-            className="w-full accent-accent"
+            disabled={isAiMode}
+            className="w-full accent-accent disabled:opacity-30"
           />
         </div>
 
         <div>
-          <label className="text-sm text-zinc-500 block mb-1">
+          <label className={`text-sm block mb-1 ${isAiMode ? 'text-zinc-300' : 'text-zinc-500'}`}>
             Line Thickness: {lineThickness}
           </label>
           <input
@@ -451,7 +554,8 @@ export default function EditorPage() {
             max={3}
             value={lineThickness}
             onChange={(e) => setLineThickness(Number(e.target.value))}
-            className="w-full accent-accent"
+            disabled={isAiMode}
+            className="w-full accent-accent disabled:opacity-30"
           />
         </div>
 
@@ -525,6 +629,19 @@ export default function EditorPage() {
         </div>
         {/* Hidden reveal mask canvas: white(255)=reveal, black(0)=no reveal */}
         <canvas ref={maskCanvasRef} className="hidden" />
+
+        {/* Error banner */}
+        {generationError && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg shadow max-w-md text-center">
+            {generationError}
+            <button
+              onClick={() => setGenerationError(null)}
+              className="ml-2 text-red-400 hover:text-red-600"
+            >
+              x
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Right: Export */}
@@ -541,51 +658,31 @@ export default function EditorPage() {
           </button>
           <button
             onClick={() => handleExport(2048)}
-            className="w-full py-2 px-4 rounded-lg bg-zinc-100 text-zinc-600 font-medium text-sm hover:bg-zinc-200 transition-colors"
+            disabled={isExporting}
+            className="w-full py-2 px-4 rounded-lg bg-zinc-100 text-zinc-600 font-medium text-sm hover:bg-zinc-200 transition-colors disabled:opacity-50"
           >
-            2048px (1 credit)
+            {isExporting ? 'Exporting...' : '2048px (1 credit)'}
           </button>
           <button
             onClick={() => handleExport(4096)}
-            className="w-full py-2 px-4 rounded-lg bg-zinc-100 text-zinc-600 font-medium text-sm hover:bg-zinc-200 transition-colors"
+            disabled={isExporting}
+            className="w-full py-2 px-4 rounded-lg bg-zinc-100 text-zinc-600 font-medium text-sm hover:bg-zinc-200 transition-colors disabled:opacity-50"
           >
-            4096px (3 credits)
+            {isExporting ? 'Exporting...' : '4096px (3 credits)'}
           </button>
         </div>
 
         <div className="text-xs text-zinc-400 space-y-1">
-          <p>Free exports include a watermark.</p>
+          <p>1024px: free with watermark.</p>
+          <p>2048px: 1 credit, no watermark.</p>
+          <p>4096px: 3 credits, no watermark.</p>
+          <p className="text-zinc-300">No code? Exports have BETA watermark.</p>
           <p>
             Image: {imageSize.width} x {imageSize.height}px
           </p>
         </div>
       </aside>
 
-      {/* Coming Soon Dialog */}
-      {showExportDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl">
-            <h3 className="text-lg font-bold mb-2">Coming Soon</h3>
-            <p className="text-zinc-500 text-sm mb-4">
-              High-resolution export requires credits. The credit system is coming soon!
-            </p>
-            <div className="flex gap-2">
-              <a
-                href="/pricing"
-                className="flex-1 py-2 px-4 rounded-lg bg-accent text-white text-sm font-medium text-center hover:bg-accent-hover transition-colors"
-              >
-                View Pricing
-              </a>
-              <button
-                onClick={() => setShowExportDialog(false)}
-                className="flex-1 py-2 px-4 rounded-lg bg-zinc-100 text-sm font-medium hover:bg-zinc-200 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </main>
   );
 }
