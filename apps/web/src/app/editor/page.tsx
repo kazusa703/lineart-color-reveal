@@ -457,19 +457,18 @@ export default function EditorPage() {
     [feather, imageDataToBlob],
   );
 
-  if (isLoading) {
-    return (
-      <main className="flex items-center justify-center min-h-[calc(100vh-57px)]">
-        <div className="text-center">
-          <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="text-zinc-500">Generating line art...</p>
-        </div>
-      </main>
-    );
-  }
-
   return (
-    <main className="flex h-[calc(100vh-57px)] overflow-hidden">
+    <main className="flex h-[calc(100vh-57px)] overflow-hidden relative">
+      {/* Loading overlay — canvases stay in DOM so refs are valid */}
+      {isLoading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/80">
+          <div className="text-center">
+            <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-4" />
+            <p className="text-zinc-500">Generating line art...</p>
+          </div>
+        </div>
+      )}
+
       {/* Left: Tools */}
       <aside className="w-60 border-r border-border bg-surface p-4 flex flex-col gap-3 shrink-0 overflow-y-auto">
         <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">Tools</h2>
