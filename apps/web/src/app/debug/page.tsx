@@ -35,7 +35,7 @@ export default function DebugPage() {
 
       const requestId = ++renderIdRef.current;
       const { width: w, height: h } = orig;
-      const opts: LineArtOptions = { threshold, thickness };
+      const opts: LineArtOptions = { threshold, thickness, style: 'rough' };
       const lineArt = await getLineArtProvider()(orig, opts);
 
       if (requestId !== renderIdRef.current) return;

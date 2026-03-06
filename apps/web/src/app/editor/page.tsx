@@ -4,7 +4,9 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   compositeWithRevealMask,
   exportCompositePNG,
+  LINE_ART_STYLE_LABELS,
   type LineArtOptions,
+  type LineArtStyle,
 } from '@/utils/imageProcessing';
 import { getLineArtProvider, isReplicateProvider } from '@/utils/lineArtProvider';
 import { MaskHistory } from '@/utils/maskHistory';
@@ -30,6 +32,7 @@ export default function EditorPage() {
   const [isExporting, setIsExporting] = useState(false);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
 
+  const [lineStyle, setLineStyle] = useState<LineArtStyle>('rough');
   const [lineThreshold, setLineThreshold] = useState(40);
   const [lineThickness, setLineThickness] = useState(1);
   const [feather, setFeather] = useState(3);
@@ -68,13 +71,13 @@ export default function EditorPage() {
 
   // Regenerate line art via provider with debounce + request ID
   const scheduleRegenerate = useCallback(
-    (threshold: number, thickness: number) => {
+    (threshold: number, thickness: number, style: LineArtStyle) => {
       if (regenerateTimerRef.current) clearTimeout(regenerateTimerRef.current);
 
       regenerateTimerRef.current = setTimeout(async () => {
         if (!originalDataRef.current) return;
         const requestId = ++regenerateIdRef.current;
-        const opts: LineArtOptions = { threshold, thickness };
+        const opts: LineArtOptions = { threshold, thickness, style };
         try {
           setGenerationError(null);
           const result = await getLineArtProvider()(originalDataRef.current, opts);
@@ -126,7 +129,7 @@ export default function EditorPage() {
       originalDataRef.current = tmpCtx.getImageData(0, 0, width, height);
 
       // Generate initial line art (no debounce for first load)
-      const opts: LineArtOptions = { threshold: lineThreshold, thickness: lineThickness };
+      const opts: LineArtOptions = { threshold: lineThreshold, thickness: lineThickness, style: lineStyle };
       try {
         lineArtDataRef.current = await getLineArtProvider()(originalDataRef.current, opts);
       } catch (err) {
@@ -172,11 +175,11 @@ export default function EditorPage() {
     if (!isLoading) renderComposite();
   }, [feather, isLoading, renderComposite]);
 
-  // Debounced re-generation when threshold/thickness change
+  // Debounced re-generation when threshold/thickness/style change
   useEffect(() => {
     if (isLoading) return;
-    scheduleRegenerate(lineThreshold, lineThickness);
-  }, [lineThreshold, lineThickness, isLoading, scheduleRegenerate]);
+    scheduleRegenerate(lineThreshold, lineThickness, lineStyle);
+  }, [lineThreshold, lineThickness, lineStyle, isLoading, scheduleRegenerate]);
 
   const getCanvasPos = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -536,6 +539,25 @@ export default function EditorPage() {
           <p className="text-xs text-zinc-400">AI mode — threshold/thickness are ignored.</p>
         )}
 
+        {!isAiMode && (
+          <div>
+            <label className="text-sm text-zinc-500 block mb-1">Style</label>
+            <div className="flex gap-1">
+              {(Object.keys(LINE_ART_STYLE_LABELS) as LineArtStyle[]).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setLineStyle(s)}
+                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition-colors ${
+                    lineStyle === s ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
+                  }`}
+                >
+                  {LINE_ART_STYLE_LABELS[s]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div>
           <label className={`text-sm block mb-1 ${isAiMode ? 'text-zinc-300' : 'text-zinc-500'}`}>
             Line Threshold: {lineThreshold}
@@ -552,7 +574,7 @@ export default function EditorPage() {
         </div>
 
         <div>
-          <label className={`text-sm block mb-1 ${isAiMode ? 'text-zinc-300' : 'text-zinc-500'}`}>
+          <label className={`text-sm block mb-1 ${isAiMode || lineStyle === 'fine' ? 'text-zinc-300' : 'text-zinc-500'}`}>
             Line Thickness: {lineThickness}
           </label>
           <input
@@ -561,7 +583,7 @@ export default function EditorPage() {
             max={3}
             value={lineThickness}
             onChange={(e) => setLineThickness(Number(e.target.value))}
-            disabled={isAiMode}
+            disabled={isAiMode || lineStyle === 'fine'}
             className="w-full accent-accent disabled:opacity-30"
           />
         </div>

@@ -18,13 +18,21 @@
 // API can accept/return the same mask without conversion.
 // =============================================================================
 
-// --- Line art generation options ---
+// --- Line art style presets ---
+export type LineArtStyle = 'rough' | 'fine';
+
 export interface LineArtOptions {
   threshold: number; // 0-255, higher = fewer lines (default: 40)
   thickness: number; // 1-3, dilation passes (default: 1)
+  style: LineArtStyle;
 }
 
-export const DEFAULT_LINE_ART_OPTIONS: LineArtOptions = { threshold: 40, thickness: 1 };
+export const DEFAULT_LINE_ART_OPTIONS: LineArtOptions = { threshold: 40, thickness: 1, style: 'rough' };
+
+export const LINE_ART_STYLE_LABELS: Record<LineArtStyle, string> = {
+  rough: 'Rough',
+  fine: 'Fine',
+};
 
 // --- Export options ---
 export interface ExportCompositeOptions {
@@ -81,8 +89,70 @@ function dilate(mask: Uint8Array, w: number, h: number): Uint8Array {
   return dst;
 }
 
+// Sobel edge detection: returns { mag, gx, gy } arrays
+function sobelEdges(gray: Float32Array, w: number, h: number) {
+  const mag = new Float32Array(w * h);
+  const gxArr = new Float32Array(w * h);
+  const gyArr = new Float32Array(w * h);
+  let maxMag = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const tl = gray[(y - 1) * w + (x - 1)];
+      const tc = gray[(y - 1) * w + x];
+      const tr = gray[(y - 1) * w + (x + 1)];
+      const ml = gray[y * w + (x - 1)];
+      const mr = gray[y * w + (x + 1)];
+      const bl = gray[(y + 1) * w + (x - 1)];
+      const bc = gray[(y + 1) * w + x];
+      const br = gray[(y + 1) * w + (x + 1)];
+      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      const m = Math.sqrt(gx * gx + gy * gy);
+      const idx = y * w + x;
+      mag[idx] = m;
+      gxArr[idx] = gx;
+      gyArr[idx] = gy;
+      if (m > maxMag) maxMag = m;
+    }
+  }
+  return { mag, gx: gxArr, gy: gyArr, maxMag };
+}
+
+// Non-maximum suppression: thin edges to 1px width
+function nonMaxSuppression(
+  mag: Float32Array, gx: Float32Array, gy: Float32Array,
+  w: number, h: number,
+): Float32Array {
+  const out = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = y * w + x;
+      const m = mag[idx];
+      if (m === 0) continue;
+      // Gradient direction → quantize to 4 directions
+      const angle = Math.atan2(gy[idx], gx[idx]);
+      const a = ((angle * 180 / Math.PI) + 180) % 180; // 0..180
+      let n1: number, n2: number;
+      if (a < 22.5 || a >= 157.5) {
+        // horizontal edge → compare up/down
+        n1 = mag[(y - 1) * w + x]; n2 = mag[(y + 1) * w + x];
+      } else if (a < 67.5) {
+        n1 = mag[(y - 1) * w + (x + 1)]; n2 = mag[(y + 1) * w + (x - 1)];
+      } else if (a < 112.5) {
+        // vertical edge → compare left/right
+        n1 = mag[y * w + (x - 1)]; n2 = mag[y * w + (x + 1)];
+      } else {
+        n1 = mag[(y - 1) * w + (x - 1)]; n2 = mag[(y + 1) * w + (x + 1)];
+      }
+      out[idx] = (m >= n1 && m >= n2) ? m : 0;
+    }
+  }
+  return out;
+}
+
 // Converts an image to a minimal line-art representation.
-// Pipeline: grayscale -> blur -> Sobel -> threshold -> dilate -> invert
+// Style 'rough': grayscale → blur → Sobel → threshold → dilate → invert (bold lines)
+// Style 'fine':  grayscale → Sobel → NMS → threshold → invert (thin precise 1px lines)
 export function generateLineArt(
   imageData: ImageData,
   opts: LineArtOptions = DEFAULT_LINE_ART_OPTIONS,
@@ -96,37 +166,31 @@ export function generateLineArt(
     grayRaw[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
   }
 
-  const gray = boxBlur(grayRaw, w, h);
+  let lineMask: Uint8Array;
 
-  const edges = new Float32Array(w * h);
-  let maxEdge = 0;
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const tl = gray[(y - 1) * w + (x - 1)];
-      const tc = gray[(y - 1) * w + x];
-      const tr = gray[(y - 1) * w + (x + 1)];
-      const ml = gray[y * w + (x - 1)];
-      const mr = gray[y * w + (x + 1)];
-      const bl = gray[(y + 1) * w + (x - 1)];
-      const bc = gray[(y + 1) * w + x];
-      const br = gray[(y + 1) * w + (x + 1)];
-      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
-      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
-      const mag = Math.sqrt(gx * gx + gy * gy);
-      edges[y * w + x] = mag;
-      if (mag > maxEdge) maxEdge = mag;
+  if (opts.style === 'fine') {
+    // Fine: no pre-blur, NMS for thin edges
+    const { mag, gx, gy, maxMag } = sobelEdges(grayRaw, w, h);
+    const thinned = nonMaxSuppression(mag, gx, gy, w, h);
+    const thresholdNorm = opts.threshold / 255;
+    lineMask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const norm = maxMag > 0 ? thinned[i] / maxMag : 0;
+      lineMask[i] = norm > thresholdNorm ? 1 : 0;
     }
-  }
-
-  const thresholdNorm = opts.threshold / 255;
-  let lineMask: Uint8Array = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const norm = maxEdge > 0 ? edges[i] / maxEdge : 0;
-    lineMask[i] = norm > thresholdNorm ? 1 : 0;
-  }
-
-  for (let d = 1; d < opts.thickness; d++) {
-    lineMask = dilate(lineMask, w, h);
+  } else {
+    // Rough: blur + Sobel + dilate (original pipeline)
+    const gray = boxBlur(grayRaw, w, h);
+    const { mag, maxMag } = sobelEdges(gray, w, h);
+    const thresholdNorm = opts.threshold / 255;
+    lineMask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const norm = maxMag > 0 ? mag[i] / maxMag : 0;
+      lineMask[i] = norm > thresholdNorm ? 1 : 0;
+    }
+    for (let d = 1; d < opts.thickness; d++) {
+      lineMask = dilate(lineMask, w, h);
+    }
   }
 
   for (let i = 0; i < w * h; i++) {
