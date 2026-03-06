@@ -338,6 +338,14 @@ export default function EditorPage() {
       if (e.key === 'e') setTool('eraser');
       if (e.key === '[') setBrushSize((s) => Math.max(5, s - 5));
       if (e.key === ']') setBrushSize((s) => Math.min(100, s + 5));
+      // Arrow keys: pan (or zoom with +/-)
+      const PAN_STEP = 40;
+      if (e.key === 'ArrowUp') { e.preventDefault(); setPanOffset((p) => ({ ...p, y: p.y + PAN_STEP })); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); setPanOffset((p) => ({ ...p, y: p.y - PAN_STEP })); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); setPanOffset((p) => ({ ...p, x: p.x + PAN_STEP })); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); setPanOffset((p) => ({ ...p, x: p.x - PAN_STEP })); }
+      if (e.key === '+' || e.key === '=') { setZoom((z) => Math.min(4, z * 1.15)); }
+      if (e.key === '-') { setZoom((z) => Math.max(0.25, z / 1.15)); }
       if (e.key === ' ') {
         e.preventDefault();
         isSpaceDownRef.current = true;
@@ -594,7 +602,9 @@ export default function EditorPage() {
           <br />
           Cmd+Z=Undo Cmd+Shift+Z=Redo
           <br />
-          Scroll=Zoom Space+Drag=Pan
+          Scroll=Zoom +/-=Zoom
+          <br />
+          Arrows=Pan Space+Drag=Pan
         </p>
       </aside>
 
