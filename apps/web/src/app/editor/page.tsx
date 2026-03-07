@@ -10,10 +10,12 @@ import {
 } from '@/utils/imageProcessing';
 import { getLineArtProvider, isReplicateProvider } from '@/utils/lineArtProvider';
 import { MaskHistory } from '@/utils/maskHistory';
+import { useI18n } from '@/utils/i18n';
 
 type Tool = 'brush' | 'eraser';
 
 export default function EditorPage() {
+  const { t } = useI18n();
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement>(null);
   const cursorCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -475,14 +477,14 @@ export default function EditorPage() {
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/80">
           <div className="text-center">
             <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-4" />
-            <p className="text-zinc-500">Generating line art...</p>
+            <p className="text-zinc-500">{t('editor.generating')}</p>
           </div>
         </div>
       )}
 
       {/* Left: Tools */}
       <aside className="w-60 border-r border-border bg-surface p-4 flex flex-col gap-3 shrink-0 overflow-y-auto">
-        <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">Tools</h2>
+        <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">{t('editor.tools')}</h2>
 
         <div className="flex gap-2">
           <button
@@ -491,7 +493,7 @@ export default function EditorPage() {
               tool === 'brush' ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
             }`}
           >
-            Brush (B)
+            {t('editor.brush')}
           </button>
           <button
             onClick={() => setTool('eraser')}
@@ -499,12 +501,12 @@ export default function EditorPage() {
               tool === 'eraser' ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
             }`}
           >
-            Eraser (E)
+            {t('editor.eraser')}
           </button>
         </div>
 
         <div>
-          <label className="text-sm text-zinc-500 block mb-1">Brush Size: {brushSize}px</label>
+          <label className="text-sm text-zinc-500 block mb-1">{t('editor.brushSize')}: {brushSize}px</label>
           <input
             type="range"
             min={5}
@@ -517,7 +519,7 @@ export default function EditorPage() {
 
         <div>
           <label className="text-sm text-zinc-500 block mb-1">
-            Zoom: {Math.round(zoom * 100)}%
+            {t('editor.zoom')}: {Math.round(zoom * 100)}%
           </label>
           <input
             type="range"
@@ -532,16 +534,16 @@ export default function EditorPage() {
         <hr className="border-border" />
 
         <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">
-          Line Art {isAiMode && <span className="text-accent font-normal normal-case">(AI)</span>}
+          {t('editor.lineArt')} {isAiMode && <span className="text-accent font-normal normal-case">(AI)</span>}
         </h2>
 
         {isAiMode && (
-          <p className="text-xs text-zinc-400">AI mode — threshold/thickness are ignored.</p>
+          <p className="text-xs text-zinc-400">{t('editor.aiMode')}</p>
         )}
 
         {!isAiMode && (
           <div>
-            <label className="text-sm text-zinc-500 block mb-1">Style</label>
+            <label className="text-sm text-zinc-500 block mb-1">{t('editor.style')}</label>
             <div className="flex gap-1">
               {(Object.keys(LINE_ART_STYLE_LABELS) as LineArtStyle[]).map((s) => (
                 <button
@@ -551,7 +553,7 @@ export default function EditorPage() {
                     lineStyle === s ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
                   }`}
                 >
-                  {LINE_ART_STYLE_LABELS[s]}
+                  {t(`editor.style.${s}`)}
                 </button>
               ))}
             </div>
@@ -560,7 +562,7 @@ export default function EditorPage() {
 
         <div>
           <label className={`text-sm block mb-1 ${isAiMode ? 'text-zinc-300' : 'text-zinc-500'}`}>
-            Line Threshold: {lineThreshold}
+            {t('editor.threshold')}: {lineThreshold}
           </label>
           <input
             type="range"
@@ -575,7 +577,7 @@ export default function EditorPage() {
 
         <div>
           <label className={`text-sm block mb-1 ${isAiMode || lineStyle === 'fine' ? 'text-zinc-300' : 'text-zinc-500'}`}>
-            Line Thickness: {lineThickness}
+            {t('editor.thickness')}: {lineThickness}
           </label>
           <input
             type="range"
@@ -589,7 +591,7 @@ export default function EditorPage() {
         </div>
 
         <div>
-          <label className="text-sm text-zinc-500 block mb-1">Feather: {feather}px</label>
+          <label className="text-sm text-zinc-500 block mb-1">{t('editor.feather')}: {feather}px</label>
           <input
             type="range"
             min={0}
@@ -608,14 +610,14 @@ export default function EditorPage() {
             disabled={!canUndo}
             className="flex-1 py-2 px-3 rounded-lg text-sm bg-zinc-100 hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            Undo
+            {t('editor.undo')}
           </button>
           <button
             onClick={handleRedo}
             disabled={!canRedo}
             className="flex-1 py-2 px-3 rounded-lg text-sm bg-zinc-100 hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            Redo
+            {t('editor.redo')}
           </button>
         </div>
 
@@ -677,7 +679,7 @@ export default function EditorPage() {
 
       {/* Right: Export */}
       <aside className="w-56 border-l border-border bg-surface p-4 flex flex-col gap-4 shrink-0">
-        <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">Export</h2>
+        <h2 className="font-bold text-sm text-zinc-400 uppercase tracking-wider">{t('editor.export')}</h2>
 
         <div className="space-y-2">
           <button
@@ -685,31 +687,31 @@ export default function EditorPage() {
             disabled={isExporting}
             className="w-full py-2 px-4 rounded-lg bg-accent text-white font-medium text-sm hover:bg-accent-hover transition-colors disabled:opacity-50"
           >
-            {isExporting ? 'Exporting...' : '1024px (Free)'}
+            {isExporting ? t('editor.exporting') : `1024px (${t('editor.free')})`}
           </button>
           <button
             onClick={() => handleExport(2048)}
             disabled={isExporting}
             className="w-full py-2 px-4 rounded-lg bg-zinc-100 text-zinc-600 font-medium text-sm hover:bg-zinc-200 transition-colors disabled:opacity-50"
           >
-            {isExporting ? 'Exporting...' : '2048px (1 credit)'}
+            {isExporting ? t('editor.exporting') : `2048px (1 ${t('editor.credit')})`}
           </button>
           <button
             onClick={() => handleExport(4096)}
             disabled={isExporting}
             className="w-full py-2 px-4 rounded-lg bg-zinc-100 text-zinc-600 font-medium text-sm hover:bg-zinc-200 transition-colors disabled:opacity-50"
           >
-            {isExporting ? 'Exporting...' : '4096px (3 credits)'}
+            {isExporting ? t('editor.exporting') : `4096px (3 ${t('editor.credits')})`}
           </button>
         </div>
 
         <div className="text-xs text-zinc-400 space-y-1">
-          <p>1024px: free with watermark.</p>
-          <p>2048px: 1 credit, no watermark.</p>
-          <p>4096px: 3 credits, no watermark.</p>
-          <p className="text-zinc-300">No code? Exports have BETA watermark.</p>
+          <p>{t('editor.exportInfo.1024')}</p>
+          <p>{t('editor.exportInfo.2048')}</p>
+          <p>{t('editor.exportInfo.4096')}</p>
+          <p className="text-zinc-300">{t('editor.exportInfo.noCode')}</p>
           <p>
-            Image: {imageSize.width} x {imageSize.height}px
+            {t('editor.image')}: {imageSize.width} x {imageSize.height}px
           </p>
         </div>
       </aside>
