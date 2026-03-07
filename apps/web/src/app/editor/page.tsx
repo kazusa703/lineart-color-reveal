@@ -544,12 +544,12 @@ export default function EditorPage() {
         {!isAiMode && (
           <div>
             <label className="text-sm text-zinc-500 block mb-1">{t('editor.style')}</label>
-            <div className="flex gap-1">
+            <div className="grid grid-cols-3 gap-1">
               {(Object.keys(LINE_ART_STYLE_LABELS) as LineArtStyle[]).map((s) => (
                 <button
                   key={s}
                   onClick={() => setLineStyle(s)}
-                  className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition-colors ${
+                  className={`py-1.5 px-2 rounded-lg text-xs font-medium transition-colors ${
                     lineStyle === s ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
                   }`}
                 >
@@ -576,7 +576,7 @@ export default function EditorPage() {
         </div>
 
         <div>
-          <label className={`text-sm block mb-1 ${isAiMode || lineStyle === 'fine' ? 'text-zinc-300' : 'text-zinc-500'}`}>
+          <label className={`text-sm block mb-1 ${isAiMode || lineStyle !== 'rough' ? 'text-zinc-300' : 'text-zinc-500'}`}>
             {t('editor.thickness')}: {lineThickness}
           </label>
           <input
@@ -585,7 +585,7 @@ export default function EditorPage() {
             max={3}
             value={lineThickness}
             onChange={(e) => setLineThickness(Number(e.target.value))}
-            disabled={isAiMode || lineStyle === 'fine'}
+            disabled={isAiMode || lineStyle !== 'rough'}
             className="w-full accent-accent disabled:opacity-30"
           />
         </div>

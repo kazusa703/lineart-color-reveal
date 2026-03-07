@@ -19,7 +19,7 @@
 // =============================================================================
 
 // --- Line art style presets ---
-export type LineArtStyle = 'rough' | 'fine';
+export type LineArtStyle = 'rough' | 'fine' | 'bold' | 'sketch' | 'minimal' | 'dot';
 
 export interface LineArtOptions {
   threshold: number; // 0-255, higher = fewer lines (default: 40)
@@ -32,6 +32,10 @@ export const DEFAULT_LINE_ART_OPTIONS: LineArtOptions = { threshold: 40, thickne
 export const LINE_ART_STYLE_LABELS: Record<LineArtStyle, string> = {
   rough: 'Rough',
   fine: 'Fine',
+  bold: 'Bold',
+  sketch: 'Sketch',
+  minimal: 'Minimal',
+  dot: 'Dot',
 };
 
 // --- Export options ---
@@ -150,9 +154,36 @@ function nonMaxSuppression(
   return out;
 }
 
-// Converts an image to a minimal line-art representation.
-// Style 'rough': grayscale → blur → Sobel → threshold → dilate → invert (bold lines)
-// Style 'fine':  grayscale → Sobel → NMS → threshold → invert (thin precise 1px lines)
+// Floyd-Steinberg dithering on a grayscale Float32Array (0..255)
+function floydSteinbergDither(gray: Float32Array, w: number, h: number): Uint8Array {
+  const buf = new Float32Array(gray);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const old = buf[idx];
+      const val = old < 128 ? 0 : 255;
+      out[idx] = val === 0 ? 1 : 0; // 1 = dot (black), 0 = white
+      const err = old - val;
+      if (x + 1 < w) buf[idx + 1] += err * 7 / 16;
+      if (y + 1 < h) {
+        if (x > 0) buf[(y + 1) * w + (x - 1)] += err * 3 / 16;
+        buf[(y + 1) * w + x] += err * 5 / 16;
+        if (x + 1 < w) buf[(y + 1) * w + (x + 1)] += err * 1 / 16;
+      }
+    }
+  }
+  return out;
+}
+
+// Converts an image to a line-art representation.
+// Styles:
+//   rough:   blur → Sobel → threshold → dilate (bold lines)
+//   fine:    Sobel → NMS → threshold (thin precise 1px lines)
+//   bold:    blur → Sobel → low threshold → 3x dilate (manga-style thick)
+//   sketch:  multi-scale Sobel blend with grayscale gradation (pencil sketch)
+//   minimal: strong blur → Sobel → high threshold (contour only)
+//   dot:     grayscale → Floyd-Steinberg dithering (stipple)
 export function generateLineArt(
   imageData: ImageData,
   opts: LineArtOptions = DEFAULT_LINE_ART_OPTIONS,
@@ -160,40 +191,95 @@ export function generateLineArt(
   const { width: w, height: h, data } = imageData;
   const output = new ImageData(w, h);
   const out = output.data;
+  const n = w * h;
 
-  const grayRaw = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) {
+  const grayRaw = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
     grayRaw[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
   }
 
+  if (opts.style === 'dot') {
+    // Dot: Floyd-Steinberg dithering
+    const dotMask = floydSteinbergDither(grayRaw, w, h);
+    for (let i = 0; i < n; i++) {
+      const v = dotMask[i] ? 0 : 255;
+      out[i * 4] = v;
+      out[i * 4 + 1] = v;
+      out[i * 4 + 2] = v;
+      out[i * 4 + 3] = 255;
+    }
+    return output;
+  }
+
+  if (opts.style === 'sketch') {
+    // Sketch: blend Sobel at two blur levels for pencil-like gradation
+    const blurred1 = boxBlur(grayRaw, w, h);
+    const blurred2 = boxBlur(blurred1, w, h);
+    const { mag: mag1, maxMag: max1 } = sobelEdges(blurred1, w, h);
+    const { mag: mag2, maxMag: max2 } = sobelEdges(blurred2, w, h);
+    for (let i = 0; i < n; i++) {
+      const e1 = max1 > 0 ? mag1[i] / max1 : 0;
+      const e2 = max2 > 0 ? mag2[i] / max2 : 0;
+      const combined = Math.min(1, e1 * 0.7 + e2 * 0.5);
+      // Grayscale gradation: stronger edges = darker
+      const v = Math.round(255 * (1 - combined));
+      out[i * 4] = v;
+      out[i * 4 + 1] = v;
+      out[i * 4 + 2] = v;
+      out[i * 4 + 3] = 255;
+    }
+    return output;
+  }
+
+  // All remaining styles use binary edge mask
   let lineMask: Uint8Array;
 
   if (opts.style === 'fine') {
-    // Fine: no pre-blur, NMS for thin edges
     const { mag, gx, gy, maxMag } = sobelEdges(grayRaw, w, h);
     const thinned = nonMaxSuppression(mag, gx, gy, w, h);
     const thresholdNorm = opts.threshold / 255;
-    lineMask = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      const norm = maxMag > 0 ? thinned[i] / maxMag : 0;
-      lineMask[i] = norm > thresholdNorm ? 1 : 0;
+    lineMask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      lineMask[i] = (maxMag > 0 ? thinned[i] / maxMag : 0) > thresholdNorm ? 1 : 0;
+    }
+  } else if (opts.style === 'bold') {
+    // Bold: low threshold + 3 dilation passes for thick manga lines
+    const gray = boxBlur(grayRaw, w, h);
+    const { mag, maxMag } = sobelEdges(gray, w, h);
+    const thresholdNorm = Math.max(0.05, (opts.threshold * 0.5) / 255);
+    lineMask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      lineMask[i] = (maxMag > 0 ? mag[i] / maxMag : 0) > thresholdNorm ? 1 : 0;
+    }
+    for (let d = 0; d < 3; d++) {
+      lineMask = dilate(lineMask, w, h);
+    }
+  } else if (opts.style === 'minimal') {
+    // Minimal: strong blur to suppress detail, high threshold for contours only
+    let gray = boxBlur(grayRaw, w, h);
+    gray = boxBlur(gray, w, h);
+    gray = boxBlur(gray, w, h);
+    const { mag, maxMag } = sobelEdges(gray, w, h);
+    const thresholdNorm = Math.min(0.9, (opts.threshold * 2) / 255);
+    lineMask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      lineMask[i] = (maxMag > 0 ? mag[i] / maxMag : 0) > thresholdNorm ? 1 : 0;
     }
   } else {
-    // Rough: blur + Sobel + dilate (original pipeline)
+    // Rough (default)
     const gray = boxBlur(grayRaw, w, h);
     const { mag, maxMag } = sobelEdges(gray, w, h);
     const thresholdNorm = opts.threshold / 255;
-    lineMask = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      const norm = maxMag > 0 ? mag[i] / maxMag : 0;
-      lineMask[i] = norm > thresholdNorm ? 1 : 0;
+    lineMask = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      lineMask[i] = (maxMag > 0 ? mag[i] / maxMag : 0) > thresholdNorm ? 1 : 0;
     }
     for (let d = 1; d < opts.thickness; d++) {
       lineMask = dilate(lineMask, w, h);
     }
   }
 
-  for (let i = 0; i < w * h; i++) {
+  for (let i = 0; i < n; i++) {
     const v = lineMask[i] ? 0 : 255;
     out[i * 4] = v;
     out[i * 4 + 1] = v;
