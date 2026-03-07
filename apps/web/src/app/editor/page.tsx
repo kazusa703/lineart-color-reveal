@@ -38,6 +38,7 @@ export default function EditorPage() {
   const [lineThreshold, setLineThreshold] = useState(40);
   const [lineThickness, setLineThickness] = useState(1);
   const [feather, setFeather] = useState(3);
+  const [invertMask, setInvertMask] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
 
   const isAiMode = isReplicateProvider();
@@ -60,6 +61,16 @@ export default function EditorPage() {
 
     const maskCtx = maskCanvas.getContext('2d')!;
     const revealMask = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+
+    if (invertMask) {
+      const d = revealMask.data;
+      for (let i = 0; i < d.length; i += 4) {
+        d[i] = 255 - d[i];
+        d[i + 1] = 255 - d[i + 1];
+        d[i + 2] = 255 - d[i + 2];
+      }
+    }
+
     const composite = compositeWithRevealMask(
       lineArtDataRef.current,
       originalDataRef.current,
@@ -69,7 +80,7 @@ export default function EditorPage() {
 
     const displayCtx = displayCanvas.getContext('2d')!;
     displayCtx.putImageData(composite, 0, 0);
-  }, [feather]);
+  }, [feather, invertMask]);
 
   // Regenerate line art via provider with debounce + request ID
   const scheduleRegenerate = useCallback(
@@ -381,6 +392,22 @@ export default function EditorPage() {
     });
   }, []);
 
+  const getRevealMask = useCallback(() => {
+    const maskCanvas = maskCanvasRef.current!;
+    const revealMask = maskCanvas
+      .getContext('2d')!
+      .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    if (invertMask) {
+      const d = revealMask.data;
+      for (let i = 0; i < d.length; i += 4) {
+        d[i] = 255 - d[i];
+        d[i + 1] = 255 - d[i + 1];
+        d[i + 2] = 255 - d[i + 2];
+      }
+    }
+    return revealMask;
+  }, [invertMask]);
+
   const handleExport = useCallback(
     async (targetWidth: number) => {
       if (!originalDataRef.current || !lineArtDataRef.current) return;
@@ -390,10 +417,7 @@ export default function EditorPage() {
       try {
         if (targetWidth <= 1024) {
           // Client-side export with watermark
-          const maskCanvas = maskCanvasRef.current!;
-          const revealMask = maskCanvas
-            .getContext('2d')!
-            .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+          const revealMask = getRevealMask();
           const blob = await exportCompositePNG({
             lineArt: lineArtDataRef.current!,
             original: originalDataRef.current!,
@@ -410,10 +434,7 @@ export default function EditorPage() {
           URL.revokeObjectURL(url);
         } else {
           // Server-side high-res export (beta watermark)
-          const maskCanvas = maskCanvasRef.current!;
-          const revealMask = maskCanvas
-            .getContext('2d')!
-            .getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+          const revealMask = getRevealMask();
 
           const [origBlob, laBlob, maskBlob] = await Promise.all([
             imageDataToBlob(originalDataRef.current!),
@@ -467,7 +488,7 @@ export default function EditorPage() {
         setIsExporting(false);
       }
     },
-    [feather, imageDataToBlob],
+    [feather, imageDataToBlob, getRevealMask],
   );
 
   return (
@@ -601,6 +622,15 @@ export default function EditorPage() {
             className="w-full accent-accent"
           />
         </div>
+
+        <button
+          onClick={() => setInvertMask((v) => !v)}
+          className={`w-full py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+            invertMask ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
+          }`}
+        >
+          {t('editor.invert')}
+        </button>
 
         <hr className="border-border" />
 
