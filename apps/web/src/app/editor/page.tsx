@@ -13,6 +13,7 @@ import { MaskHistory } from '@/utils/maskHistory';
 import { useI18n } from '@/utils/i18n';
 
 type Tool = 'brush' | 'eraser';
+type BrushShape = 'circle' | 'square' | 'triangle';
 
 export default function EditorPage() {
   const { t } = useI18n();
@@ -25,6 +26,7 @@ export default function EditorPage() {
   const historyRef = useRef(new MaskHistory());
 
   const [tool, setTool] = useState<Tool>('brush');
+  const [brushShape, setBrushShape] = useState<BrushShape>('circle');
   const [brushSize, setBrushSize] = useState(30);
   const [zoom, setZoom] = useState(1);
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
@@ -206,6 +208,24 @@ export default function EditorPage() {
     [zoom],
   );
 
+  const traceBrushPath = useCallback(
+    (ctx: CanvasRenderingContext2D, cx: number, cy: number) => {
+      const r = brushSize / 2;
+      ctx.beginPath();
+      if (brushShape === 'square') {
+        ctx.rect(cx - r, cy - r, brushSize, brushSize);
+      } else if (brushShape === 'triangle') {
+        ctx.moveTo(cx, cy - r);
+        ctx.lineTo(cx + r, cy + r);
+        ctx.lineTo(cx - r, cy + r);
+        ctx.closePath();
+      } else {
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      }
+    },
+    [brushSize, brushShape],
+  );
+
   // Paint with interpolation between points for smooth strokes.
   // Brush paints white(255)=reveal, eraser paints black(0)=no reveal.
   const paintAt = useCallback(
@@ -226,19 +246,17 @@ export default function EditorPage() {
           const t = steps === 0 ? 0 : i / steps;
           const px = last.x + dx * t;
           const py = last.y + dy * t;
-          ctx.beginPath();
-          ctx.arc(px, py, brushSize / 2, 0, Math.PI * 2);
+          traceBrushPath(ctx, px, py);
           ctx.fill();
         }
       } else {
-        ctx.beginPath();
-        ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+        traceBrushPath(ctx, x, y);
         ctx.fill();
       }
       lastPaintPosRef.current = { x, y };
       renderComposite();
     },
-    [tool, brushSize, renderComposite],
+    [tool, brushSize, renderComposite, traceBrushPath],
   );
 
   const drawCursor = useCallback(
@@ -247,13 +265,12 @@ export default function EditorPage() {
       if (!cursorCanvas) return;
       const ctx = cursorCanvas.getContext('2d')!;
       ctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
-      ctx.beginPath();
-      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+      traceBrushPath(ctx, x, y);
       ctx.strokeStyle = tool === 'brush' ? 'rgba(100,99,255,0.7)' : 'rgba(255,80,80,0.7)';
       ctx.lineWidth = 1.5 / zoom;
       ctx.stroke();
     },
-    [brushSize, tool, zoom],
+    [traceBrushPath, tool, zoom],
   );
 
   const onMouseDown = useCallback(
@@ -524,6 +541,27 @@ export default function EditorPage() {
           >
             {t('editor.eraser')}
           </button>
+        </div>
+
+        <div>
+          <label className="text-sm text-zinc-500 block mb-1">{t('editor.brushShape')}</label>
+          <div className="flex gap-1">
+            {(['circle', 'square', 'triangle'] as BrushShape[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => setBrushShape(s)}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1 ${
+                  brushShape === s ? 'bg-accent text-white' : 'bg-zinc-100 hover:bg-zinc-200'
+                }`}
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
+                  {s === 'circle' && <circle cx="8" cy="8" r="6" />}
+                  {s === 'square' && <rect x="2" y="2" width="12" height="12" />}
+                  {s === 'triangle' && <polygon points="8,2 14,14 2,14" />}
+                </svg>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div>
