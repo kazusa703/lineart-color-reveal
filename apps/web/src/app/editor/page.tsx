@@ -621,14 +621,29 @@ export default function EditorPage() {
           </button>
         </div>
 
+        {/* Pan D-pad + Zoom buttons */}
+        <div className="flex items-center gap-3 mt-1">
+          <div className="grid grid-cols-3 grid-rows-3 gap-0.5 w-[84px]">
+            <div />
+            <button onClick={() => setPanOffset((p) => ({ ...p, y: p.y + 40 }))} className="w-7 h-7 rounded bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 text-xs transition-colors">&#9650;</button>
+            <div />
+            <button onClick={() => setPanOffset((p) => ({ ...p, x: p.x + 40 }))} className="w-7 h-7 rounded bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 text-xs transition-colors">&#9664;</button>
+            <div className="w-7 h-7" />
+            <button onClick={() => setPanOffset((p) => ({ ...p, x: p.x - 40 }))} className="w-7 h-7 rounded bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 text-xs transition-colors">&#9654;</button>
+            <div />
+            <button onClick={() => setPanOffset((p) => ({ ...p, y: p.y - 40 }))} className="w-7 h-7 rounded bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-500 text-xs transition-colors">&#9660;</button>
+            <div />
+          </div>
+          <div className="flex flex-col gap-1">
+            <button onClick={() => setZoom((z) => Math.min(4, z * 1.15))} className="w-8 h-8 rounded bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-600 text-lg font-bold transition-colors">+</button>
+            <button onClick={() => setZoom((z) => Math.max(0.25, z / 1.15))} className="w-8 h-8 rounded bg-zinc-100 hover:bg-zinc-200 flex items-center justify-center text-zinc-600 text-lg font-bold transition-colors">&minus;</button>
+          </div>
+        </div>
+
         <p className="text-xs text-zinc-400 mt-auto leading-relaxed">
           B=Brush E=Eraser [/]=Size
           <br />
-          Cmd+Z=Undo Cmd+Shift+Z=Redo
-          <br />
-          Scroll=Zoom +/-=Zoom
-          <br />
-          Arrows=Pan Space+Drag=Pan
+          Cmd+Z / Cmd+Shift+Z
         </p>
       </aside>
 
